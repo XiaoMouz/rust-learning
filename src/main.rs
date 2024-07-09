@@ -9,7 +9,7 @@ mod server;
 
 #[derive(Parser)]
 struct Arguments {
-    #[arg(default_value_t=String::from("0.0.0.0:10000"))]
+    #[arg(short='a',default_value_t=String::from("0.0.0.0:10000"))]
     server_address: String,
 }
 
