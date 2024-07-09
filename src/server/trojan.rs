@@ -1,0 +1,101 @@
+use rustls::ServerConfig;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::Arc;
+use tokio::io::{copy_bidirectional, AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::net::{TcpListener, TcpStream};
+use tokio_rustls::server::TlsStream;
+use tokio_rustls::TlsAcceptor;
+use tracing::{info, span};
+
+pub struct Tr0janServer {
+    address: String,
+    server_config: Arc<ServerConfig>,
+}
+
+impl Tr0janServer {
+    pub fn new(address: &str, server_config: ServerConfig) -> Self {
+        Self {
+            address: address.to_string(),
+            server_config: Arc::new(server_config),
+        }
+    }
+
+    pub async fn run(self) -> anyhow::Result<()> {
+        let listener = TcpListener::bind(self.address.clone()).await?;
+        let tls_acceptor = TlsAcceptor::from(self.server_config.clone());
+        let _span = span!(tracing::Level::DEBUG, "listen", address = self.address).entered();
+
+        info!("TCP Server Stated");
+
+        _span.exit();
+        loop {
+            match listener.accept().await {
+                Ok((stream, ..)) => {
+                    if let Ok(tls_stream) = tls_acceptor
+                        .accept(stream)
+                        .await
+                        .inspect_err(|error| eprintln!("{error}"))
+                    {
+                        tokio::spawn(async move {
+                            Self::handle(tls_stream)
+                                .await
+                                .inspect_err(|error| eprint!("{error}"))
+                        });
+                    }
+                }
+                Err(e) => {
+                    eprintln!("accept failed: {:?}", e);
+                    continue;
+                }
+            }
+        }
+    }
+
+    pub async fn handle<IO: AsyncRead + AsyncWrite + Unpin>(
+        mut tls_stream: TlsStream<IO>,
+    ) -> anyhow::Result<()> {
+        let mut password = [0_u8; 56];
+        // read head 56 bytes content
+        tls_stream.read_exact(&mut password).await?;
+
+        Self::read_crlf(&mut tls_stream).await;
+
+        let cmd = tls_stream.read_u8().await?;
+
+        // check is tcp, if not tcp return
+        if cmd != 0x1 {
+            return Ok(());
+        }
+        // check address type and got address
+        let address_type = tls_stream.read_u8().await?;
+        let address = match address_type {
+            0x1 => {
+                let buffer = tls_stream.read_u32().await?;
+                IpAddr::V4(Ipv4Addr::from(buffer)).to_string()
+            }
+            0x3 => {
+                let length = tls_stream.read_u8().await?;
+                let mut buffer = vec![0_u8; length as usize];
+                tls_stream.read_exact(&mut buffer).await?.to_string()
+            }
+            0x4 => {
+                let buffer = tls_stream.read_u128().await?;
+                IpAddr::V6(Ipv6Addr::from(buffer)).to_string()
+            }
+            _ => {
+                //panic!("unknown address")
+                unimplemented!()
+            }
+        };
+
+        let port = tls_stream.read_u16().await?;
+        Self::read_crlf(&mut tls_stream).await;
+        let mut remote = TcpStream::connect(format!("{address}:{port}")).await?;
+        copy_bidirectional(&mut remote, &mut tls_stream).await?;
+        Ok(())
+    }
+
+    async fn read_crlf<IO: AsyncRead + AsyncWrite + Unpin>(mut tls_stream: IO) {
+        tls_stream.read_u16().await.unwrap();
+    }
+}
