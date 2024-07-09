@@ -1,12 +1,17 @@
 use anyhow::Result as AnyResult;
+use clap::Parser;
 use server::trojan::Tr0janServer;
 use std::io;
 use std::{fs::File, io::BufReader};
-
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::rustls::ServerConfig;
-
 mod server;
+
+#[derive(Parser)]
+struct Arguments {
+    #[arg(default_value_t=String::from("0.0.0.0:10000"))]
+    server_address: String,
+}
 
 fn load_cert(
     cert_path: &str,
@@ -25,6 +30,8 @@ fn load_cert(
 
 #[tokio::main]
 async fn main() -> AnyResult<()> {
+    let arguments = Arguments::parse();
+
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .init();
@@ -34,7 +41,7 @@ async fn main() -> AnyResult<()> {
         .with_no_client_auth()
         .with_single_cert(cert, key)?;
 
-    let server = Tr0janServer::new("0.0.0.0:10000", config);
+    let server = Tr0janServer::new(&arguments.server_address, config);
     server.run().await?;
 
     //let tls_acceptor = TlsAcceptor::from(config);
