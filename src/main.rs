@@ -11,6 +11,8 @@ mod server;
 struct Arguments {
     #[arg(short='a',default_value_t=String::from("0.0.0.0:10000"))]
     server_address: String,
+    #[arg(short='p',default_value_t=String::from("nopassword"))]
+    password: String,
 }
 
 fn load_cert(
@@ -41,7 +43,7 @@ async fn main() -> AnyResult<()> {
         .with_no_client_auth()
         .with_single_cert(cert, key)?;
 
-    let server = Tr0janServer::new(&arguments.server_address, config);
+    let server = Tr0janServer::new(&arguments.server_address, config, &arguments.password);
     server.run().await?;
 
     //let tls_acceptor = TlsAcceptor::from(config);

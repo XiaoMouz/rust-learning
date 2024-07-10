@@ -1,22 +1,29 @@
 use rustls::ServerConfig;
+use sha2::{Digest, Sha224};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use tokio::io::{copy_bidirectional, AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::server::TlsStream;
 use tokio_rustls::TlsAcceptor;
-use tracing::{info, span};
+use tracing::{error, info, span};
 
 pub struct Tr0janServer {
     address: String,
     server_config: Arc<ServerConfig>,
+    password: Arc<String>,
 }
 
 impl Tr0janServer {
-    pub fn new(address: &str, server_config: ServerConfig) -> Self {
+    pub fn new(address: &str, server_config: ServerConfig, password: &str) -> Self {
+        let mut hasher = Sha224::new();
+        hasher.update(password);
+        let password = hex::encode(hasher.finalize());
+
         Self {
             address: address.to_string(),
             server_config: Arc::new(server_config),
+            password: Arc::new(password),
         }
     }
 
@@ -36,8 +43,9 @@ impl Tr0janServer {
                         .await
                         .inspect_err(|error| eprintln!("{error}"))
                     {
+                        let pwd = self.password.clone();
                         tokio::spawn(async move {
-                            Self::handle(tls_stream)
+                            Self::handle(tls_stream, pwd)
                                 .await
                                 .inspect_err(|error| eprint!("{error}"))
                         });
@@ -53,10 +61,24 @@ impl Tr0janServer {
 
     pub async fn handle<IO: AsyncRead + AsyncWrite + Unpin>(
         mut tls_stream: TlsStream<IO>,
+        token: Arc<String>,
     ) -> anyhow::Result<()> {
         let mut password = [0_u8; 56];
         // read head 56 bytes content
         tls_stream.read_exact(&mut password).await?;
+
+        let password_str = match std::str::from_utf8(&password) {
+            Ok(password) => password,
+            Err(_) => {
+                error!("password is not utf8");
+                return Ok(());
+            }
+        };
+
+        if password_str != *token {
+            error!("invalid password");
+            return Ok(());
+        }
 
         Self::read_crlf(&mut tls_stream).await;
 
@@ -95,7 +117,10 @@ impl Tr0janServer {
         Ok(())
     }
 
-    async fn read_crlf<IO: AsyncRead + AsyncWrite + Unpin>(mut tls_stream: IO) {
-        tls_stream.read_u16().await.unwrap();
+    async fn read_crlf<IO: AsyncRead + AsyncWrite + Unpin>(
+        mut tls_stream: IO,
+    ) -> anyhow::Result<()> {
+        tls_stream.read_u16().await?;
+        Ok(())
     }
 }
