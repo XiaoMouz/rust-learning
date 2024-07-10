@@ -35,7 +35,7 @@ async fn main() -> AnyResult<()> {
     let arguments = Arguments::parse();
 
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
+        .with_max_level(tracing::Level::INFO)
         .init();
     let (cert, key) = load_cert("cert/cert.pem", "cert/key.key")?;
 

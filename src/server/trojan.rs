@@ -15,19 +15,19 @@ pub struct Tr0janServer {
 }
 
 impl Tr0janServer {
-    pub fn new(address: &str, server_config: ServerConfig, password: &str) -> Self {
+    pub fn new(address: &str, server_config: ServerConfig, password: &str) -> Arc<Self> {
         let mut hasher = Sha224::new();
         hasher.update(password);
         let password = hex::encode(hasher.finalize());
 
-        Self {
+        Arc::new(Self {
             address: address.to_string(),
             server_config: Arc::new(server_config),
             password: Arc::new(password),
-        }
+        })
     }
 
-    pub async fn run(self) -> anyhow::Result<()> {
+    pub async fn run(self: Arc<Self>) -> anyhow::Result<()> {
         let listener = TcpListener::bind(self.address.clone()).await?;
         let tls_acceptor = TlsAcceptor::from(self.server_config.clone());
         let _span = span!(tracing::Level::DEBUG, "listen", address = self.address).entered();
@@ -38,14 +38,14 @@ impl Tr0janServer {
         loop {
             match listener.accept().await {
                 Ok((stream, ..)) => {
+                    let this = self.clone();
                     if let Ok(tls_stream) = tls_acceptor
                         .accept(stream)
                         .await
                         .inspect_err(|error| eprintln!("{error}"))
                     {
-                        let pwd = self.password.clone();
                         tokio::spawn(async move {
-                            Self::handle(tls_stream, pwd)
+                            this.handle(tls_stream)
                                 .await
                                 .inspect_err(|error| eprint!("{error}"))
                         });
@@ -60,8 +60,8 @@ impl Tr0janServer {
     }
 
     pub async fn handle<IO: AsyncRead + AsyncWrite + Unpin>(
+        self: Arc<Self>,
         mut tls_stream: TlsStream<IO>,
-        token: Arc<String>,
     ) -> anyhow::Result<()> {
         let mut password = [0_u8; 56];
         // read head 56 bytes content
@@ -75,12 +75,12 @@ impl Tr0janServer {
             }
         };
 
-        if password_str != *token {
+        if password_str != self.password.as_str() {
             error!("invalid password");
             return Ok(());
         }
 
-        Self::read_crlf(&mut tls_stream).await;
+        Self::read_crlf(&mut tls_stream).await?;
 
         let cmd = tls_stream.read_u8().await?;
 
@@ -98,7 +98,8 @@ impl Tr0janServer {
             0x3 => {
                 let length = tls_stream.read_u8().await?;
                 let mut buffer = vec![0_u8; length as usize];
-                tls_stream.read_exact(&mut buffer).await?.to_string()
+                tls_stream.read_exact(&mut buffer).await?;
+                String::from_utf8(buffer)?
             }
             0x4 => {
                 let buffer = tls_stream.read_u128().await?;
@@ -111,7 +112,8 @@ impl Tr0janServer {
         };
 
         let port = tls_stream.read_u16().await?;
-        Self::read_crlf(&mut tls_stream).await;
+        Self::read_crlf(&mut tls_stream).await?;
+
         let mut remote = TcpStream::connect(format!("{address}:{port}")).await?;
         copy_bidirectional(&mut remote, &mut tls_stream).await?;
         Ok(())
